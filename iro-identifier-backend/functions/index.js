@@ -73,7 +73,8 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
 
         busboy.on("finish", () => {
             const bucket = gcs.bucket("iro-identifier.appspot.com");
-            uploadData.map(upload => {
+            let promises = [];
+            promises.push(uploadData.map(upload => {
                 const uuid = UUID();
                 bucket.upload(upload.file, {
                     uploadType: "media",
@@ -82,19 +83,22 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
                             contentType: upload.type,
                             firebaseStorageDownloadTokens: uuid
                         }
-                    }
-                }).then((err, uploadedFile) => {
-                    res.status(200).json({
-                        message: "Files uploaded successfully!"
-                    });
+                    },
+                    resumable: false
+                });
+            }));
+            
+            Promise.all(promises).then((err, uploadedFile) => {
+                res.status(200).json({
+                    message: "Files uploaded successfully!"
+                });
                 }).catch(err => {
                     res.status(500).json({
-                        error: err
-                    });
+                    error: err
                 });
             });
-            
         });
+
         busboy.end(req.rawBody);
     });
 });
