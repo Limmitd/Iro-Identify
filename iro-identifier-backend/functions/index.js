@@ -19,7 +19,7 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
     const filePath = event.name;
     console.log("File detected");
 
-    if (path.basename(filePath).startsWith("thumbnail-")) {
+    if (path.basename(filePath).startsWith("iro-thumbnail-")) {
         console.log("Already resized this file!");
         return true;
     }
@@ -35,7 +35,7 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
         return spawn("convert", [tmpFilePath, "-resize", "500x500", tmpFilePath]);
     }).then(() => {
         return destBucket.upload(tmpFilePath, {
-            destination: 'thumbnail-' + path.basename(filePath),
+            destination: path.join( "thumbnails", ('iro-thumbnail-' + path.basename(filePath))),
             metadata: metadata
         });
     }).then(_ => true);
@@ -47,16 +47,16 @@ exports.onImageDelete = functions.storage.object().onDelete(event => {
     const filePath = event.name;
     console.log("File was deleted...");
 
-    if (path.basename(filePath).startsWith("thumbnail-")) {
+    if (path.basename(filePath).startsWith("iro-thumbnail-")) {
         console.log("Thumbnail already deleted");
         return true;
     }
     
-    bucket.file("thumbnail-" + path.basename(filePath)).delete();
+    bucket.file(path.join( "thumbnails", ('iro-thumbnail-' + path.basename(filePath)))).delete();
     return true;
 });
 
-exports.uploadFile = functions.https.onRequest((req, res) => {
+exports.uploadImages = functions.https.onRequest((req, res) => {
     cors(req, res, () => {
         if (req.method !== "POST") {
             return res.status(500).json({
@@ -77,6 +77,7 @@ exports.uploadFile = functions.https.onRequest((req, res) => {
             promises.push(uploadData.map(upload => {
                 const uuid = UUID();
                 bucket.upload(upload.file, {
+                    destination: path.join("images", path.basename(upload.file)),
                     uploadType: "media",
                     metadata: {
                         metadata: {
