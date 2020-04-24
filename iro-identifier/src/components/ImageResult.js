@@ -1,5 +1,12 @@
-// import React, { Component } from 'react';
+import React from 'react';
 
-// class ImageResult extends Component {
+const ImageResult = ({ image }) => {
 
-// }
+    return(
+        // <a href={image.url}><img src={image.thumbnailUrl} alt={image.name} /></a>
+        <>
+        </>
+    )
+}
+
+export default ImageResult;

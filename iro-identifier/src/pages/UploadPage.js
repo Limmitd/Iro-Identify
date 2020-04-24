@@ -8,15 +8,14 @@ const UploadPage = () => {
     const fileSelectedHandler = event => {
         let fileList = [];
         for (const file of event.target.files) {
-            if (!file.type.startsWith("image/")) {
-                console.log("One of the selected files has an invalid file type and was not added to upload list!");
+            if (!file.type.startsWith("image/jpeg") && !file.type.startsWith("image/png")) {
+                console.log(`Images must either be of jpg or png format! One of the selected files has an invalid file type and was not added to upload list.`);
             } else if (file.size > MaxRequestSize) {
                 console.log(`One of the files was larger than the max upload size of ${((MaxRequestSize/1024)/1024)}MB and was not added to upload list!`)
             } else {
                 fileList.push(file);
             }
         }
-
         setSelectedImages(fileList);
     }
 
