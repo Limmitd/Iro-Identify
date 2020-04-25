@@ -43,8 +43,9 @@ const newDbImage = (owner, name, type, url, thumbnailUrl, width, height) => {
         data: image,
     }
 
-    datastore.save(entity).then(() => {
+    return datastore.save(entity).then(() => {
         console.log(`Saved ${imageName} to database.`);
+        return true;
     }).catch(err => {
         console.log(err);
     });
@@ -123,7 +124,7 @@ exports.onImageDelete = functions.storage.object().onDelete(event => {
     console.log("File was deleted...");
 
     const query = datastore.createQuery("Image").filter("owner", "=", owner).filter("name", "=", path.parse(basename).name);
-    datastore.runQuery(query).then((res) => {
+    return datastore.runQuery(query).then((res) => {
         if (res) {
             datastore.delete(res[0][0][datastore.KEY]).then(() => {
                 console.log(`Deleted database entry for ${basename}.`);
@@ -134,7 +135,6 @@ exports.onImageDelete = functions.storage.object().onDelete(event => {
             return false;
         }
     });
-    return true;
 });
 
 exports.uploadImages = functions.https.onRequest((req, res) => {
@@ -156,9 +156,10 @@ exports.uploadImages = functions.https.onRequest((req, res) => {
             const bucket = gcs.bucket("iro-identifier.appspot.com");
             const owner = "guest";
             let promises = [];
-            promises.push(uploadData.map(upload => {
+            uploadData.map(upload => {
                 const uuid = UUID();
                 const destination = path.join(owner, "images", path.basename(upload.file));
+
                 const dimensions = sizeOf(upload.file);
                 let width = dimensions.width;
                 let height = dimensions.height;
@@ -168,7 +169,7 @@ exports.uploadImages = functions.https.onRequest((req, res) => {
                 }
 
                 // upload current file to storage
-                bucket.upload(upload.file, {
+                promises.push(bucket.upload(upload.file, {
                     destination: destination,
                     uploadType: "media",
                     metadata: {
@@ -180,8 +181,8 @@ exports.uploadImages = functions.https.onRequest((req, res) => {
                         }
                     },
                     resumable: false
-                });
-            }));
+                }));
+            });
             
             Promise.all(promises).then(() => {
                     res.status(200).json({
