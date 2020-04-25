@@ -78,7 +78,7 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
     };
 
     const uploaded = destBucket.file(filepath);
-    let originalUrl = "";
+    let originalUrl = null;
 
     return destBucket.file(filepath).download({
         destination: tmpFilepath,
@@ -102,10 +102,9 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
             expires: "12-31-2490"
         });
     }).then((thumbnailUrl) => {
-        console.log("Adding database entry...")
+        console.log("Adding database entry...");
         return newDbImage(owner, path.basename(filepath), contentType, originalUrl, thumbnailUrl, parseInt(splitSize[0]), parseInt(splitSize[1]));
     }).then(() => {
-        console.log("Finished");
         return true;
     });
 });
@@ -114,13 +113,27 @@ exports.onImageDelete = functions.storage.object().onDelete(event => {
     const bucket = gcs.bucket(event.bucket);
     const owner = "guest";
     const filePath = event.name;
+    const basename = path.basename(filePath);
 
-    if (path.basename(filePath).startsWith("iro-thumbnail-")) {
+    if (basename.startsWith("iro-thumbnail-")) {
         return true;
     }
     
-    bucket.file(path.join(owner, "thumbnails", ('iro-thumbnail-' + path.basename(filePath)))).delete();
+    bucket.file(path.join(owner, "thumbnails", ('iro-thumbnail-' + basename))).delete();
     console.log("File was deleted...");
+
+    const query = datastore.createQuery("Image").filter("owner", "=", owner).filter("name", "=", path.parse(basename).name);
+    datastore.runQuery(query).then((res) => {
+        if (res) {
+            datastore.delete(res[0][0][datastore.KEY]).then(() => {
+                console.log(`Deleted database entry for ${basename}.`);
+                return true;
+            });
+        } else {
+            console.log(`No database entry found for ${basename} so there was no deletion.`);
+            return false;
+        }
+    });
     return true;
 });
 
@@ -147,6 +160,12 @@ exports.uploadImages = functions.https.onRequest((req, res) => {
                 const uuid = UUID();
                 const destination = path.join(owner, "images", path.basename(upload.file));
                 const dimensions = sizeOf(upload.file);
+                let width = dimensions.width;
+                let height = dimensions.height;
+                if ((dimensions.orientation === 6) || (dimensions.orientation === 8)) {
+                    width = dimensions.height;
+                    height = dimensions.width;
+                }
 
                 // upload current file to storage
                 bucket.upload(upload.file, {
@@ -155,7 +174,7 @@ exports.uploadImages = functions.https.onRequest((req, res) => {
                     metadata: {
                         contentType: upload.type,
                         metadata: {
-                            size: `${dimensions.height}x${dimensions.width}`,
+                            size: `${width}x${height}`,
                             owner: owner,
                             firebaseStorageDownloadTokens: uuid
                         }
