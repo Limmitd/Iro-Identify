@@ -7,6 +7,7 @@ const cors = require("cors")({origin: true});
 const Busboy = require("busboy");
 const UUID = require("uuid-v4");
 const sizeOf = require("image-size");
+const getColors = require('get-image-colors');
 const { Storage } = require("@google-cloud/storage");
 const { Datastore } = require('@google-cloud/datastore');
 
@@ -19,7 +20,7 @@ const datastore = new Datastore({
     keyFilename: pathToGcKey
 });
 
-const newDbImage = (owner, name, type, url, thumbnailUrl, width, height) => {
+const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, color) => {
     const kind = "Image";
     const key = datastore.key(kind);
     
@@ -36,6 +37,8 @@ const newDbImage = (owner, name, type, url, thumbnailUrl, width, height) => {
         width: width,
         height: height,
         aspectRatio: ratio,
+        colors: color,
+        objects: [],
     }
 
     const entity = {
@@ -43,12 +46,7 @@ const newDbImage = (owner, name, type, url, thumbnailUrl, width, height) => {
         data: image,
     }
 
-    return datastore.save(entity).then(() => {
-        console.log(`Saved ${imageName} to database.`);
-        return true;
-    }).catch(err => {
-        console.log(err);
-    });
+    return datastore.save(entity);
 }
 
 exports.onImageUpload = functions.storage.object().onFinalize(event => {
@@ -58,7 +56,6 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
     console.log("File detected");
 
     if (path.basename(filepath).startsWith("iro-thumbnail-")) {
-        console.log("Already resized this file!");
         return true;
     }
 
@@ -76,37 +73,54 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
             owner: owner,
             firebaseStorageDownloadTokens: uuid, 
         }
-    };
+    }
 
-    const uploaded = destBucket.file(filepath);
+    const original = destBucket.file(filepath);
     let originalUrl = null;
+    let thumbnailUrl = null;
+    let colors = [];
 
+    let promises = [];
+
+    // download original image into system tmp
     return destBucket.file(filepath).download({
         destination: tmpFilepath,
     }).then(() => {
-        return spawn("convert", [tmpFilepath, "-resize", "500x500", tmpFilepath]);
+        // analyze image colors
+        promises.push(getColors(tmpFilepath).then((colorResults) => {
+            for (color of colorResults) {
+                colors.push(color.hex());
+            }
+            return true;
+        }));
+        // get access url for original image
+        promises.push(original.getSignedUrl({action: "read", expires: "12-31-2490"}).then((url) => {originalUrl = url; return true;}));
+        // resize original image for thumbnail, reupload, then get its access url
+        promises.push(spawn("convert", [tmpFilepath, "-resize", "500x500", tmpFilepath]).then(() => {
+            return destBucket.upload(tmpFilepath, {
+                destination: path.join(owner, "thumbnails", ('iro-thumbnail-' + path.basename(filepath))),
+                metadata: metadata
+            });
+        }).then(() => {
+            return destBucket.file(path.join(owner, "thumbnails", ('iro-thumbnail-' + path.basename(filepath)))).getSignedUrl({
+                action: "read",
+                expires: "12-31-2490"
+            });
+        }).then((url) => {thumbnailUrl = url; return true;}));
     }).then(() => {
-        return destBucket.upload(tmpFilepath, {
-            destination: path.join(owner, "thumbnails", ('iro-thumbnail-' + path.basename(filepath))),
-            metadata: metadata
+        // create DB entry once all promises are resolved
+        return Promise.all(promises).then(() => {
+            return newDbImage(owner, path.basename(filepath), contentType, originalUrl, thumbnailUrl, parseInt(splitSize[0]), parseInt(splitSize[1]), colors);
+        }).then(() => {
+            console.log(`Saved ${path.basename(filepath)} to database.`);
+            return true;
+        }).catch((err) => {
+            console.error(`Error on Finalize: ${err}`);
+            return false;
         });
-    }).then(() => {
-        return uploaded.getSignedUrl({
-            action: "read",
-            expires: "12-31-2490"
-        });
-    }).then((url) => {
-            originalUrl = url;
-    }).then(() => {
-        return destBucket.file(path.join(owner, "thumbnails", ('iro-thumbnail-' + path.basename(filepath)))).getSignedUrl({
-            action: "read",
-            expires: "12-31-2490"
-        });
-    }).then((thumbnailUrl) => {
-        console.log("Adding database entry...");
-        return newDbImage(owner, path.basename(filepath), contentType, originalUrl, thumbnailUrl, parseInt(splitSize[0]), parseInt(splitSize[1]));
-    }).then(() => {
-        return true;
+    }).catch((err) => {
+        console.error(`Error: ${err}`);
+        return false;
     });
 });
 
