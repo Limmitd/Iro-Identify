@@ -124,9 +124,9 @@ exports.onImageDelete = functions.storage.object().onDelete(event => {
     console.log("File was deleted...");
 
     const query = datastore.createQuery("Image").filter("owner", "=", owner).filter("name", "=", path.parse(basename).name);
-    return datastore.runQuery(query).then((res) => {
-        if (res) {
-            datastore.delete(res[0][0][datastore.KEY]).then(() => {
+    return datastore.runQuery(query).then((results) => {
+        if (results) {
+            datastore.delete(results[0][0][datastore.KEY]).then(() => {
                 console.log(`Deleted database entry for ${basename}.`);
                 return true;
             });
@@ -142,7 +142,7 @@ exports.uploadImages = functions.https.onRequest((req, res) => {
         if (req.method !== "POST") {
             return res.status(500).json({
                 message: "Not allowed"
-            })
+            });
         }
         const busboy = new Busboy({ headers: req.headers });
         let uploadData = [];
@@ -196,5 +196,61 @@ exports.uploadImages = functions.https.onRequest((req, res) => {
         });
 
         busboy.end(req.rawBody);
+    });
+});
+
+exports.getImages = functions.https.onRequest((req, res) => {
+    cors(req, res, () => {
+        if (req.method !== "POST") {
+            return res.status(500).json({
+                message: "Not allowed"
+            });
+        }
+
+        const query = datastore.createQuery("Image");
+        return datastore.runQuery(query).then((results) => {
+            let list = [];
+            for (image of results[0]) {
+                list.push(image);
+            }
+            res.status(200).json({
+                images: list,
+            });
+        }).then(() => {
+            return true;
+        }).catch((err) => {
+            res.status(500).json({
+                error: err,
+            });
+        });
+    });
+});
+
+exports.getImagesFromOwner = functions.https.onRequest((req, res) => {
+    cors(req, res, () => {
+        if (req.method !== "POST") {
+            return res.status(500).json({
+                message: "Not allowed"
+            });
+        }
+
+        const owner = req.body.owner;
+
+        const query = datastore.createQuery("Image").filter("owner", "=", owner);
+        return datastore.runQuery(query).then((results) => {
+            let list = [];
+            for (image of results[0]) {
+                list.push(image);
+            }
+            res.status(200).json({
+                images: list,
+            });
+        }).then(() => {
+            return true;
+        }).catch((err) => {
+            res.status(500).json({
+                error: err,
+            });
+        });
     });
 });
