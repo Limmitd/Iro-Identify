@@ -8,6 +8,7 @@ const Busboy = require("busboy");
 const UUID = require("uuid-v4");
 const sizeOf = require("image-size");
 const getColors = require('get-image-colors');
+const vision = require('@google-cloud/vision');
 const { Storage } = require("@google-cloud/storage");
 const { Datastore } = require('@google-cloud/datastore');
 
@@ -15,6 +16,9 @@ const { Datastore } = require('@google-cloud/datastore');
 const SimilarityRange = 15;
 
 const pathToGcKey = "iro-identifier-firebase-adminsdk-i96zj-6e4002e6a4.json";
+const visionClient = new vision.ImageAnnotatorClient({
+    keyFilename: pathToGcKey
+});
 const gcs = new Storage({
     projectId: "iro-identifier",
     keyFilename: pathToGcKey
@@ -23,7 +27,7 @@ const datastore = new Datastore({
     keyFilename: pathToGcKey
 });
 
-const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, colors) => {
+const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, colors, labels) => {
     const kind = "Image";
     const key = datastore.key(kind);
     
@@ -41,7 +45,7 @@ const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, c
         height: height,
         aspectRatio: ratio,
         colors: colors,
-        objects: [],
+        labels: labels,
     }
 
     const entity = {
@@ -81,6 +85,7 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
     const original = destBucket.file(filepath);
     let originalUrl = null;
     let thumbnailUrl = null;
+    let labels = [];
     let colors = [];
 
     let promises = [];
@@ -89,6 +94,12 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
     return destBucket.file(filepath).download({
         destination: tmpFilepath,
     }).then(() => {
+        // analyze image labels
+        promises.push(visionClient.labelDetection(tmpFilepath).then((labelResults) => {
+            for (result of labelResults[0].labelAnnotations) {
+                labels.push(result.description.toLowerCase());
+            }
+        }));
         // analyze image colors
         promises.push(getColors(tmpFilepath, {count: 3}).then((colorResults) => {
             for (color of colorResults) {
@@ -113,7 +124,7 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
     }).then(() => {
         // create DB entry once all promises are resolved
         return Promise.all(promises).then(() => {
-            return newDbImage(owner, path.basename(filepath), contentType, originalUrl, thumbnailUrl, parseInt(splitSize[0]), parseInt(splitSize[1]), colors);
+            return newDbImage(owner, path.basename(filepath), contentType, originalUrl, thumbnailUrl, parseInt(splitSize[0]), parseInt(splitSize[1]), colors, labels);
         }).then(() => {
             console.log(`Saved ${path.basename(filepath)} to database.`);
             return true;
@@ -290,7 +301,7 @@ const getImagesByColor = async (colors) => {
         queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - SimilarityRange)).filter("colors", "<=", (currColor + SimilarityRange)));
     }
 
-    // forms collection matching first color
+    // forms collection matching first color and avoiding duplicate entries
     queries.map((query) => {
         promises.push(datastore.runQuery(query).then((results) => {
             for (image of results[0]) {
@@ -330,10 +341,10 @@ const getImagesByColor = async (colors) => {
 }
 
 const refineByColor = (imageSet, colors) => {
-    images = imageSet.slice();
+    let images = imageSet.slice();
     // filters images to images containing all given colors
     for (let i=0; i<colors.length; i++) {
-        currColor = colors[i];
+        let currColor = colors[i];
         // filters image set for current color
         images = images.filter((image) => {
             let match = false;
@@ -350,12 +361,59 @@ const refineByColor = (imageSet, colors) => {
     return images;
 }
 
-const getImageByObject = async (objects) => {
+const getImagesByLabel = async (labels) => {
+    let images = [];
+    let currLabel = labels[0];
 
+    // query the first label
+    const query = datastore.createQuery("Image").filter("labels", "=", currLabel);
+
+    return new Promise((resolve, reject) => {
+        datastore.runQuery(query).then((results) => {
+            images = results[0];
+            // filters images to images containing all given labels
+            for (let i=0; i<labels.length-1; i++) {
+                currLabel = labels[i+1];
+                // filters image set for current color
+                images = images.filter((image) => {
+                    let match = false;
+                    // checks each label of image for current label
+                    for (let j=0; j<image.labels.length; j++) {
+                        if (image.labels[j] === currLabel) {
+                            match = true;
+                            break;
+                        }
+                    }
+                    return match;
+                });
+            }
+        }).then(() => {
+            resolve(images);
+        }).catch((err) => {
+            reject(err);
+        });
+    });
 }
 
-const refineByObject = (images, objects) => {
-
+const refineByLabel = (imageSet, labels) => {
+    let images = imageSet.slice();
+    // filters images to images containing all given labels
+    for (let i=0; i<labels.length; i++) {
+        let currLabel = labels[i];
+        // filters image set for current label
+        images = images.filter((image) => {
+            let match = false;
+            // checks each label of image for current label
+            for (let j=0; j<image.labels.length; j++) {
+                if (image.labels[j] === currLabel) {
+                    match = true;
+                    break;
+                }
+            }
+            return match;
+        });
+    }
+    return images;
 }
 
 exports.getImages = functions.https.onRequest((req, res) => {
@@ -368,8 +426,8 @@ exports.getImages = functions.https.onRequest((req, res) => {
 
         let owner = null;
         let colors = null;
-        let objects = null;
-        // priority is used in case both conditions of images with colors and objects cannot be matched, it will return results from at least the priority
+        let labels = null;
+        // priority is used in case both conditions of images with colors and labels cannot be matched, it will return results from at least the priority
         let priority = null;
         let bothFulfilled = false;
 
@@ -379,8 +437,8 @@ exports.getImages = functions.https.onRequest((req, res) => {
         if (req.body.colors) {
             colors = req.body.colors;
         }
-        if (req.body.objects) {
-            objects = req.body.objects;
+        if (req.body.labels) {
+            labels = req.body.labels;
         }
         if (req.body.priority) {
             priority = req.body.priority;
@@ -395,8 +453,8 @@ exports.getImages = functions.https.onRequest((req, res) => {
                 images = results;
             }))
         } else if (priority) {
-            if (priority === "objects") {
-                promises.push(getImagesByObject(objects).then((results) => {
+            if (priority === "labels") {
+                promises.push(getImagesByLabel(labels).then((results) => {
                     images = results;
                 }));
             } else {
@@ -408,8 +466,8 @@ exports.getImages = functions.https.onRequest((req, res) => {
             promises.push(getImagesByColor(colors).then((results) => {
                 images = results;
             }));
-        } else if (objects) {
-            promises.push(getImagesByObject(objects).then((results) => {
+        } else if (labels) {
+            promises.push(getImagesByLabel(labels).then((results) => {
                 images = results;
             }));
         } else {
@@ -422,23 +480,23 @@ exports.getImages = functions.https.onRequest((req, res) => {
             // these are all refining the original search to meet all conditions
             // if the owner was passed
             if (owner) {
-                // checks if a priority is set and there are colors AND objects passed
-                if (priority && colors && objects) {
-                    // refines by objects then colors
-                    if (priority === "objects") {
-                        images = refineByObject(objects);
+                // checks if a priority is set and there are colors AND labels passed
+                if (priority && colors && labels) {
+                    // refines by labels then colors
+                    if (priority === "labels") {
+                        images = refineByLabel(images, labels);
                         if (colors) {
-                            const results = refineByColor(colors);
+                            const results = refineByColor(images, colors);
                             if (results.length > 0) {
                                 images = results;
                                 bothFulfilled = true;
                             }
                         }
-                    // refines by colors then objects
+                    // refines by colors then labels
                     } else {
-                        images = refineByColor(colors);
-                        if (objects) {
-                            const results = refineByObject(objects);
+                        images = refineByColor(images, colors);
+                        if (labels) {
+                            const results = refineByLabel(images, labels);
                             if (results.length > 0) {
                                 images = results;
                                 bothFulfilled = true;
@@ -447,44 +505,44 @@ exports.getImages = functions.https.onRequest((req, res) => {
                     }
                 // owner and colors are passed
                 } else if (colors) {
-                    images = refineByColor(colors);
-                    // objects are also passed
-                    if (objects) {
-                        const results = refineByObject(objects);
+                    images = refineByColor(images, colors);
+                    // labels are also passed
+                    if (labels) {
+                        const results = refineByLabel(images, labels);
                         if (results.length > 0) {
                             images = results;
                             bothFulfilled = true;
                         }
                     }
-                // only owner and objects are passed
-                } else if (objects) {
-                    images = refineByObject(objects);
+                // only owner and labels are passed
+                } else if (labels) {
+                    images = refineByLabel(images, labels);
                 }
             // no owner is passed
             } else {
-                if (priority && colors && objects) {
-                    // refines by objects then colors
-                    if (priority === "objects") {
+                if (priority && colors && labels) {
+                    // refines by labels then colors
+                    if (priority === "labels") {
                         if (colors) {
-                            const results = refineByColor(colors);
+                            const results = refineByColor(images, colors);
                             if (results.length > 0) {
                                 images = results;
                                 bothFulfilled = true;
                             }
                         }
-                    // refines by colors then objects
+                    // refines by colors then labels
                     } else {
-                        if (objects) {
-                            const results = refineByObject(objects);
+                        if (labels) {
+                            const results = refineByLabel(images, labels);
                             if (results.length > 0) {
                                 images = results;
                                 bothFulfilled = true;
                             }
                         }
                     }
-                // colors and objects are both passed with no priority
-                } else if (colors && objects) {
-                    const results = refineByObject(objects);
+                // colors and labels are both passed with no priority
+                } else if (colors && labels) {
+                    const results = refineByLabel(images, labels);
                     if (results.length > 0) {
                         images = results;
                         bothFulfilled = true;

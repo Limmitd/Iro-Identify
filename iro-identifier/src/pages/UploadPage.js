@@ -58,10 +58,7 @@ const UploadPage = () => {
             promises.push(axios.post("https://us-central1-iro-identifier.cloudfunctions.net/uploadImages", fd).then(res => {
                     console.log(res);
             }).catch(err => console.log(err)));
-            console.log("Request sent...");
         }
-
-        console.log("Waiting to finish uploading...");
 
         axios.all(promises).then(() => console.log("Uploading finished!"));
     }

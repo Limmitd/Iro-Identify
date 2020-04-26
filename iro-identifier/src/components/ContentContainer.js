@@ -11,7 +11,6 @@ const ContentContainer = () => {
     useEffect(() => {
         const fetchImages = async () => {
             const result = await axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImages");
-            console.log(result);
             setImages(result.data.images);
         }
         fetchImages();
@@ -19,8 +18,8 @@ const ContentContainer = () => {
 
     const refineSearch = () => {
         axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImages", {
-            owner: "guest",
-            colors: [60, 90],
+            colors: [290],
+            labels: ["sky"]
         }).then((res) => {
             console.log(res.data);
             setImages(res.data.images);
