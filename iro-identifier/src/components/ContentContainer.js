@@ -17,18 +17,10 @@ const ContentContainer = () => {
         fetchImages();
     }, [filterList]);
 
-    const testByOwner = () => {
-        axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImagesByOwner", {
+    const refineSearch = () => {
+        axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImages", {
             owner: "guest",
-        }).then((res) => {
-            console.log(res.data);
-            setImages(res.data.images);
-        });
-    }
-
-    const testByColor = () => {
-        axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImagesByColor", {
-            colors: [355, 290],
+            colors: [60, 90],
         }).then((res) => {
             console.log(res.data);
             setImages(res.data.images);
@@ -36,7 +28,7 @@ const ContentContainer = () => {
     }
 
     const handleClick = () => {
-        testByColor();
+        refineSearch();
     }
 
     const handleTest = () => {
@@ -45,8 +37,8 @@ const ContentContainer = () => {
     
     return (
         <>
-        <button onClick={() => handleClick()} >Send Request</button>
-        <button onClick={() => handleTest()} >Test</button>
+        <button onClick={() => handleClick()} >Refine Search</button>
+        <button onClick={() => handleTest()} >Log Displayed Images</button>
         <FilterContainer filters={filterList} setFilterList={setFilterList} />
         <ResultList images={images} />
         </>

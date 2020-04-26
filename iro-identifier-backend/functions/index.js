@@ -216,6 +216,148 @@ exports.uploadImages = functions.https.onRequest((req, res) => {
     });
 });
 
+const getImages = async () => {
+    let images = [];
+    const query = datastore.createQuery("Image");
+    return new Promise((resolve, reject) => {
+        datastore.runQuery(query).then((results) => {
+            images = results[0];
+        }).then(() => {
+            resolve(images);
+        }).catch((err) => {
+            reject(err);
+        });
+    });
+}
+
+const getImagesByOwner = async (owner) => {
+    let images = [];
+    const query = datastore.createQuery("Image").filter("owner", "=", owner);
+    return new Promise((resolve, reject) => {
+        datastore.runQuery(query).then((results) => {
+            images = results[0];
+        }).then(() => {
+            resolve(images);
+        }).catch((err) => {
+            reject(err);
+        });
+    });
+}
+
+const isSimilarColor = (match, check, range) => {
+    if ((match - range) < 0) {
+        if (((check >= 0) && (check <= range + match)) || 
+                ((check >= (360 - (range - match))) && (check <= 360))) {
+            return true;
+        } else {
+            return false;
+        }
+
+    } else if ((match + range) > 360) {
+        if (((check >= 0) && (check <= ((match + range) - 360))) || 
+                ((check >= (match - range)) && (check <= 360))) {
+            return true;
+        } else {
+            return false;
+        }
+
+    } else {
+        if ((check >= (match - range)) && (check <= (match + range))) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+}
+
+const getImagesByColor = async (colors) => {
+    let queries = [];
+    let promises = [];
+
+    let images = [];
+    let idSet = new Set();
+    let currColor = colors[0];
+
+    if ((currColor - SimilarityRange) < 0) {
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", (SimilarityRange + currColor)));
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", (360 - (SimilarityRange - currColor))).filter("colors", "<=", 360));
+
+    } else if ((currColor + SimilarityRange) > 360) {
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", ((currColor + SimilarityRange) - 360)));
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - SimilarityRange)).filter("colors", "<=", 360));
+
+    } else {
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - SimilarityRange)).filter("colors", "<=", (currColor + SimilarityRange)));
+    }
+
+    // forms collection matching first color
+    queries.map((query) => {
+        promises.push(datastore.runQuery(query).then((results) => {
+            for (image of results[0]) {
+                if (!idSet.has(image[datastore.KEY].id)) {
+                    idSet.add(image[datastore.KEY].id);
+                    images.push(image);
+                }
+            }
+            return true;
+        }));
+    });
+
+    return new Promise((resolve, reject) => {
+        Promise.all(promises).then(() => {
+            // filters images to images containing all given colors
+            for (let i=0; i<colors.length-1; i++) {
+                currColor = colors[i+1];
+                // filters image set for current color
+                images = images.filter((image) => {
+                    let match = false;
+                    // checks each color of image for similarity to current color
+                    for (let j=0; j<image.colors.length; j++) {
+                        match = isSimilarColor(currColor, image.colors[j], SimilarityRange);
+                        if (match) {
+                            break;
+                        } 
+                    }
+                    return match;
+                });
+            }
+        }).then(() => {
+            resolve(images);
+        }).catch((err) => {
+            reject(err);
+        });
+    });
+}
+
+const refineByColor = (imageSet, colors) => {
+    images = imageSet.slice();
+    // filters images to images containing all given colors
+    for (let i=0; i<colors.length; i++) {
+        currColor = colors[i];
+        // filters image set for current color
+        images = images.filter((image) => {
+            let match = false;
+            // checks each color of image for similarity to current color
+            for (let j=0; j<image.colors.length; j++) {
+                match = isSimilarColor(currColor, image.colors[j], SimilarityRange);
+                if (match) {
+                    break;
+                } 
+            }
+            return match;
+        });
+    }
+    return images;
+}
+
+const getImageByObject = async (objects) => {
+
+}
+
+const refineByObject = (images, objects) => {
+
+}
+
 exports.getImages = functions.https.onRequest((req, res) => {
     cors(req, res, () => {
         if (req.method !== "POST") {
@@ -224,100 +366,142 @@ exports.getImages = functions.https.onRequest((req, res) => {
             });
         }
 
-        const query = datastore.createQuery("Image");
-        return datastore.runQuery(query).then((results) => {
-            let list = [];
-            for (image of results[0]) {
-                list.push(image);
-            }
-            res.status(200).json({
-                images: list,
-            });
-        }).then(() => {
-            return true;
-        }).catch((err) => {
-            res.status(500).json({
-                error: err,
-            });
-        });
-    });
-});
+        let owner = null;
+        let colors = null;
+        let objects = null;
+        // priority is used in case both conditions of images with colors and objects cannot be matched, it will return results from at least the priority
+        let priority = null;
+        let bothFulfilled = false;
 
-exports.getImagesByColor = functions.https.onRequest((req, res) => {
-    cors(req, res, () => {
-        if (req.method !== "POST") {
-            return res.status(500).json({
-                message: "Not allowed"
-            });
+        if (req.body.filterByOwner) {
+            owner = req.body.owner;
+        }
+        if (req.body.colors) {
+            colors = req.body.colors;
+        }
+        if (req.body.objects) {
+            objects = req.body.objects;
+        }
+        if (req.body.priority) {
+            priority = req.body.priority;
         }
 
-        const colors = req.body.colors;
-        let idSet = new Set();
         let images = [];
-        let queries = [];
         let promises = [];
-        
-        for (color of colors) {
-            color = parseInt(color);
 
-            if ((color - SimilarityRange) < 0) {
-                queries.push(datastore).createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", (SimilarityRange + color));
-                queries.push(datastore.createQuery("Image").filter("colors", ">=", (360 - (SimilarityRange - color))).filter("colors", "<=", 360));
-
-            } else if ((color + SimilarityRange) > 360) {
-                queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", ((color + SimilarityRange) - 360)));
-                queries.push(datastore.createQuery("Image").filter("colors", ">=", (color - SimilarityRange)).filter("colors", "<=", 360));
-
-            } else {
-                queries.push(datastore.createQuery("Image").filter("colors", ">=", (color - SimilarityRange)).filter("colors", "<=", (color + SimilarityRange)));
-            }
-
-            queries.map((query) => {
-                promises.push(datastore.runQuery(query).then((results) => {
-                    for (image of results[0]) {
-                        if (!idSet.has(image[datastore.KEY].id)) {
-                            idSet.add(image[datastore.KEY].id);
-                            images.push(image);
-                        }
-                    }
-                    return true;
+        // chooses way to query the database
+        if (owner) {
+            promises.push(getImagesByOwner(owner).then((results) => {
+                images = results;
+            }))
+        } else if (priority) {
+            if (priority === "objects") {
+                promises.push(getImagesByObject(objects).then((results) => {
+                    images = results;
                 }));
-            });
+            } else {
+                promises.push(getImagesByColor(colors).then((results) => {
+                    images = results;
+                }));
+            }
+        } else if (colors) {
+            promises.push(getImagesByColor(colors).then((results) => {
+                images = results;
+            }));
+        } else if (objects) {
+            promises.push(getImagesByObject(objects).then((results) => {
+                images = results;
+            }));
+        } else {
+            promises.push(getImages().then((results) => {
+                images = results;
+            }));
         }
 
         Promise.all(promises).then(() => {
-            res.status(200).json({
-                images: images,
-            });
-        }).catch((err) => {
-            res.status(500).json({
-                error: err,
-            });
-        });
-    });
-});
-
-exports.getImagesByOwner = functions.https.onRequest((req, res) => {
-    cors(req, res, () => {
-        if (req.method !== "POST") {
-            return res.status(500).json({
-                message: "Not allowed"
-            });
-        }
-
-        const owner = req.body.owner;
-
-        const query = datastore.createQuery("Image").filter("owner", "=", owner);
-        return datastore.runQuery(query).then((results) => {
-            let list = [];
-            for (image of results[0]) {
-                list.push(image);
+            // these are all refining the original search to meet all conditions
+            // if the owner was passed
+            if (owner) {
+                // checks if a priority is set and there are colors AND objects passed
+                if (priority && colors && objects) {
+                    // refines by objects then colors
+                    if (priority === "objects") {
+                        images = refineByObject(objects);
+                        if (colors) {
+                            const results = refineByColor(colors);
+                            if (results.length > 0) {
+                                images = results;
+                                bothFulfilled = true;
+                            }
+                        }
+                    // refines by colors then objects
+                    } else {
+                        images = refineByColor(colors);
+                        if (objects) {
+                            const results = refineByObject(objects);
+                            if (results.length > 0) {
+                                images = results;
+                                bothFulfilled = true;
+                            }
+                        }
+                    }
+                // owner and colors are passed
+                } else if (colors) {
+                    images = refineByColor(colors);
+                    // objects are also passed
+                    if (objects) {
+                        const results = refineByObject(objects);
+                        if (results.length > 0) {
+                            images = results;
+                            bothFulfilled = true;
+                        }
+                    }
+                // only owner and objects are passed
+                } else if (objects) {
+                    images = refineByObject(objects);
+                }
+            // no owner is passed
+            } else {
+                if (priority && colors && objects) {
+                    // refines by objects then colors
+                    if (priority === "objects") {
+                        if (colors) {
+                            const results = refineByColor(colors);
+                            if (results.length > 0) {
+                                images = results;
+                                bothFulfilled = true;
+                            }
+                        }
+                    // refines by colors then objects
+                    } else {
+                        if (objects) {
+                            const results = refineByObject(objects);
+                            if (results.length > 0) {
+                                images = results;
+                                bothFulfilled = true;
+                            }
+                        }
+                    }
+                // colors and objects are both passed with no priority
+                } else if (colors && objects) {
+                    const results = refineByObject(objects);
+                    if (results.length > 0) {
+                        images = results;
+                        bothFulfilled = true;
+                    }
+                }
             }
-            res.status(200).json({
-                images: list,
-            });
         }).then(() => {
-            return true;
+            if (priority) {
+                res.status(200).json({
+                    images: images,
+                    bothFulfilled: bothFulfilled,
+                });
+            } else {
+                res.status(200).json({
+                    images: images,
+                });
+            }
         }).catch((err) => {
             res.status(500).json({
                 error: err,
