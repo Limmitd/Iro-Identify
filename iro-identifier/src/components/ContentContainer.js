@@ -17,13 +17,26 @@ const ContentContainer = () => {
         fetchImages();
     }, [filterList]);
 
-    const handleClick = () => {
-        axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImagesFromOwner", {
+    const testByOwner = () => {
+        axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImagesByOwner", {
             owner: "guest",
         }).then((res) => {
             console.log(res.data);
             setImages(res.data.images);
         });
+    }
+
+    const testByColor = () => {
+        axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImagesByColor", {
+            colors: [355, 290],
+        }).then((res) => {
+            console.log(res.data);
+            setImages(res.data.images);
+        });
+    }
+
+    const handleClick = () => {
+        testByColor();
     }
 
     const handleTest = () => {

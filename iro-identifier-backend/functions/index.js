@@ -11,6 +11,9 @@ const getColors = require('get-image-colors');
 const { Storage } = require("@google-cloud/storage");
 const { Datastore } = require('@google-cloud/datastore');
 
+// using HSL values, similarity range is the +- value for the L value to find similar colors
+const SimilarityRange = 15;
+
 const pathToGcKey = "iro-identifier-firebase-adminsdk-i96zj-6e4002e6a4.json";
 const gcs = new Storage({
     projectId: "iro-identifier",
@@ -20,7 +23,7 @@ const datastore = new Datastore({
     keyFilename: pathToGcKey
 });
 
-const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, color) => {
+const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, colors) => {
     const kind = "Image";
     const key = datastore.key(kind);
     
@@ -37,7 +40,7 @@ const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, c
         width: width,
         height: height,
         aspectRatio: ratio,
-        colors: color,
+        colors: colors,
         objects: [],
     }
 
@@ -87,9 +90,9 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
         destination: tmpFilepath,
     }).then(() => {
         // analyze image colors
-        promises.push(getColors(tmpFilepath).then((colorResults) => {
+        promises.push(getColors(tmpFilepath, {count: 3}).then((colorResults) => {
             for (color of colorResults) {
-                colors.push(color.hex());
+                colors.push(Math.round(color.hsl()[0]));
             }
             return true;
         }));
@@ -240,7 +243,61 @@ exports.getImages = functions.https.onRequest((req, res) => {
     });
 });
 
-exports.getImagesFromOwner = functions.https.onRequest((req, res) => {
+exports.getImagesByColor = functions.https.onRequest((req, res) => {
+    cors(req, res, () => {
+        if (req.method !== "POST") {
+            return res.status(500).json({
+                message: "Not allowed"
+            });
+        }
+
+        const colors = req.body.colors;
+        let idSet = new Set();
+        let images = [];
+        let queries = [];
+        let promises = [];
+        
+        for (color of colors) {
+            color = parseInt(color);
+
+            if ((color - SimilarityRange) < 0) {
+                queries.push(datastore).createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", (SimilarityRange + color));
+                queries.push(datastore.createQuery("Image").filter("colors", ">=", (360 - (SimilarityRange - color))).filter("colors", "<=", 360));
+
+            } else if ((color + SimilarityRange) > 360) {
+                queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", ((color + SimilarityRange) - 360)));
+                queries.push(datastore.createQuery("Image").filter("colors", ">=", (color - SimilarityRange)).filter("colors", "<=", 360));
+
+            } else {
+                queries.push(datastore.createQuery("Image").filter("colors", ">=", (color - SimilarityRange)).filter("colors", "<=", (color + SimilarityRange)));
+            }
+
+            queries.map((query) => {
+                promises.push(datastore.runQuery(query).then((results) => {
+                    for (image of results[0]) {
+                        if (!idSet.has(image[datastore.KEY].id)) {
+                            idSet.add(image[datastore.KEY].id);
+                            images.push(image);
+                        }
+                    }
+                    return true;
+                }));
+            });
+        }
+
+        Promise.all(promises).then(() => {
+            res.status(200).json({
+                images: images,
+            });
+        }).catch((err) => {
+            res.status(500).json({
+                error: err,
+            });
+        });
+    });
+});
+
+exports.getImagesByOwner = functions.https.onRequest((req, res) => {
     cors(req, res, () => {
         if (req.method !== "POST") {
             return res.status(500).json({
