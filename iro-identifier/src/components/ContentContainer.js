@@ -10,15 +10,45 @@ const ContentContainer = () => {
 
     useEffect(() => {
         const fetchImages = async () => {
-            const result = await axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImages");
-            setImages(result.data.images);
+            const result = await axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImages", {
+                colors: {
+                    red: false,
+                    redOrange: false,
+                    orange: false,
+                    orangeYellow: false,
+                    yellow: false,
+                    yellowGreen: false,
+                    green: false,
+                    greenBlue: false,
+                    blue: false,
+                    blueViolet: false,
+                    violet: false,
+                    violetRed: false,
+                },
+            }).then((res) => {
+                console.log(res.data);
+                setImages(res.data.images);
+            });
         }
         fetchImages();
     }, [filterList]);
 
     const refineSearch = () => {
         axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImages", {
-            colors: [230],
+            colors: {
+                red: false,
+                redOrange: false,
+                orange: false,
+                orangeYellow: false,
+                yellow: false,
+                yellowGreen: false,
+                green: false,
+                greenBlue: false,
+                blue: false,
+                blueViolet: false,
+                violet: true,
+                violetRed: false,
+            },
         }).then((res) => {
             console.log(res.data);
             setImages(res.data.images);

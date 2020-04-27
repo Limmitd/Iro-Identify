@@ -25,7 +25,6 @@ const UploadPage = () => {
             return;
         }
 
-        console.log("Sorting images...");
         let images = selectedImages.slice();
         // sorts image list by size
         images.sort((a, b) => (a.size > b.size) ? 1 : -1);

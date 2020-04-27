@@ -7,10 +7,11 @@ const cors = require("cors")({origin: true});
 const Busboy = require("busboy");
 const UUID = require("uuid-v4");
 const sizeOf = require("image-size");
-const getColors = require('get-image-colors');
-const vision = require('@google-cloud/vision');
+const getColors = require("get-image-colors");
+const DeltaE = require("delta-e");
+const vision = require("@google-cloud/vision");
 const { Storage } = require("@google-cloud/storage");
-const { Datastore } = require('@google-cloud/datastore');
+const { Datastore } = require("@google-cloud/datastore");
 
 const pathToGcKey = "iro-identifier-firebase-adminsdk-i96zj-6e4002e6a4.json";
 const visionClient = new vision.ImageAnnotatorClient({
@@ -24,7 +25,7 @@ const datastore = new Datastore({
     keyFilename: pathToGcKey
 });
 
-const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, colors, labels) => {
+const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, labels, colors) => {
     const kind = "Image";
     const key = datastore.key(kind);
     
@@ -41,8 +42,19 @@ const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, c
         width: width,
         height: height,
         aspectRatio: ratio,
-        colors: colors,
         labels: labels,
+        red: colors.red,
+        redOrange: colors.redOrange,
+        orange: colors.orange,
+        orangeYellow: colors.orangeYellow,
+        yellow: colors.yellow,
+        yellowGreen: colors.yellowGreen,
+        green: colors.green,
+        greenBlue: colors.greenBlue,
+        blue: colors.blue,
+        blueViolet: colors.blueViolet,
+        violet: colors.violet,
+        violetRed: colors.violetRed,
     }
 
     const entity = {
@@ -51,6 +63,55 @@ const newDbImage = async (owner, name, type, url, thumbnailUrl, width, height, c
     }
 
     return datastore.save(entity);
+}
+
+const findColorMatches = (imageColors) => {
+    const maxDeltaE = 25;
+
+    let colors = {
+        red: false,
+        redOrange: false,
+        orange: false,
+        orangeYellow: false,
+        yellow: false,
+        yellowGreen: false,
+        green: false,
+        greenBlue: false,
+        blue: false,
+        blueViolet: false,
+        violet: false,
+        violetRed: false,
+    }
+
+    const red = {L: 53.239, A: 80.09, B: 67.201};
+    const redOrange = {L: 57.58, A: 67.78, B: 68.957};
+    const orange = {L: 74.935, A: 23.929, B: 78.949};
+    const orangeYellow = {L: 77.238, A: 20.644, B: 64.452};
+    const yellow = {L: 97.139, A: -21.558, B: 94.477};
+    const yellowGreen = {L: 91.957, A: -52.483, B: 81.863};
+    const green = {L: 46.228, A: -51.699, B: 49.897};
+    const greenBlue = {L: 42.043, A: 7.594, B: -48.801};
+    const blue = {L: 32.299, A: 79.191, B: -107.865};
+    const blueViolet = {L: 42.188, A: 69.847, B: -74.771};
+    const violet = {L: 69.695, A: 56.357, B: -36.819};
+    const violetRed = {L: 44.766, A: 70.992, B: -15.176};
+
+    for (color of imageColors) {
+        colors.red = colors.red || DeltaE.getDeltaE00(red, color) < maxDeltaE;
+        colors.redOrange = colors.redOrange || DeltaE.getDeltaE00(redOrange, color) < maxDeltaE;
+        colors.orange = colors.orange || DeltaE.getDeltaE00(orange, color) < maxDeltaE;
+        colors.orangeYellow = colors.orangeYellow || DeltaE.getDeltaE00(orangeYellow, color) < maxDeltaE;
+        colors.yellow = colors.yellow || DeltaE.getDeltaE00(yellow, color) < maxDeltaE;
+        colors.yellowGreen = colors.yellowGreen || DeltaE.getDeltaE00(yellowGreen, color) < maxDeltaE;
+        colors.green = colors.green || DeltaE.getDeltaE00(green, color) < maxDeltaE;
+        colors.greenBlue = colors.greenBlue || DeltaE.getDeltaE00(greenBlue, color) < maxDeltaE;
+        colors.blue = colors.blue || DeltaE.getDeltaE00(blue, color) < maxDeltaE;
+        colors.blueViolet = colors.blueViolet || DeltaE.getDeltaE00(blueViolet, color) < maxDeltaE;
+        colors.violet = colors.violet || DeltaE.getDeltaE00(violet, color) < maxDeltaE;
+        colors.violetRed = colors.violetRed || DeltaE.getDeltaE00(violetRed, color) < maxDeltaE;
+    }
+
+    return colors;
 }
 
 exports.onImageUpload = functions.storage.object().onFinalize(event => {
@@ -99,9 +160,17 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
         }));
         // analyze image colors
         promises.push(getColors(tmpFilepath, {count: 3}).then((colorResults) => {
+            let imageColors = [];
             for (color of colorResults) {
-                colors.push(Math.round(color.hsl()[0]));
+                let labRes = color.lab();
+                let lab = {
+                    L: labRes[0],
+                    A: labRes[1],
+                    B: labRes[2],
+                }
+                imageColors.push(lab);
             }
+            colors = findColorMatches(imageColors);
             return true;
         }));
         // get access url for original image
@@ -121,7 +190,7 @@ exports.onImageUpload = functions.storage.object().onFinalize(event => {
     }).then(() => {
         // create DB entry once all promises are resolved
         return Promise.all(promises).then(() => {
-            return newDbImage(owner, path.basename(filepath), contentType, originalUrl, thumbnailUrl, parseInt(splitSize[0]), parseInt(splitSize[1]), colors, labels);
+            return newDbImage(owner, path.basename(filepath), contentType, originalUrl, thumbnailUrl, parseInt(splitSize[0]), parseInt(splitSize[1]), labels, colors);
         }).then(() => {
             console.log(`Saved ${path.basename(filepath)} to database.`);
             return true;
@@ -252,83 +321,26 @@ const getImagesByOwner = async (owner) => {
     });
 }
 
-const isSimilarColor = (match, check, range) => {
-    if ((match - range) < 0) {
-        if (((check >= 0) && (check <= range + match)) || 
-                ((check >= (360 - (range - match))) && (check <= 360))) {
-            return true;
-        } else {
-            return false;
-        }
-
-    } else if ((match + range) > 360) {
-        if (((check >= 0) && (check <= ((match + range) - 360))) || 
-                ((check >= (match - range)) && (check <= 360))) {
-            return true;
-        } else {
-            return false;
-        }
-
-    } else {
-        if ((check >= (match - range)) && (check <= (match + range))) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-}
-
-const getImagesByColor = async (colors, range) => {
-    let queries = [];
-    let promises = [];
-
+const getImagesByColor = async (colors) => {
     let images = [];
-    let idSet = new Set();
-    let currColor = colors[0];
+    let query = datastore.createQuery("Image");
 
-    if ((currColor - range) < 0) {
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", (range + currColor)));
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", (360 - (range - currColor))).filter("colors", "<=", 360));
-
-    } else if ((currColor + range) > 360) {
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", ((currColor + range) - 360)));
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - range)).filter("colors", "<=", 360));
-
-    } else {
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - range)).filter("colors", "<=", (currColor + range)));
-    }
-
-    // forms collection matching first color and avoiding duplicate entries
-    queries.map((query) => {
-        promises.push(datastore.runQuery(query).then((results) => {
-            for (image of results[0]) {
-                if (!idSet.has(image[datastore.KEY].id)) {
-                    idSet.add(image[datastore.KEY].id);
-                    images.push(image);
-                }
-            }
-            return true;
-        }));
-    });
+    if (colors.red) {query = query.filter("red", "=", true);}
+    if (colors.redOrange) {query = query.filter("redOrange", "=", true);}
+    if (colors.orange) {query = query.filter("orange", "=", true);}
+    if (colors.orangeYellow) {query = query.filter("orangeYellow", "=", true);}
+    if (colors.yellow) {query = query.filter("yellow", "=", true);}
+    if (colors.yellowGreen) {query = query.filter("yellowGreen", "=", true);}
+    if (colors.green) {query = query.filter("green", "=", true);}
+    if (colors.greenBlue) {query = query.filter("greenBlue", "=", true);}
+    if (colors.blue) {query = query.filter("blue", "=", true);}
+    if (colors.blueViolet) {query = query.filter("blueViolet", "=", true);}
+    if (colors.violet) {query = query.filter("violet", "=", true);}
+    if (colors.violetRed) {query = query.filter("violetRed", "=", true);}
 
     return new Promise((resolve, reject) => {
-        Promise.all(promises).then(() => {
-            // filters images to images containing all given colors
-            for (let i=0; i<colors.length-1; i++) {
-                currColor = colors[i+1];
-                // filters image set for current color
-                images = images.filter((image) => {
-                    let match = false;
-                    // checks each color of image for similarity to current color
-                    for (let j=0; j<image.colors.length; j++) {
-                        match = isSimilarColor(currColor, image.colors[j], range);
-                        if (match) {
-                            break;
-                        } 
-                    }
-                    return match;
-                });
-            }
+        datastore.runQuery(query).then((results) => {
+            images = results[0];
         }).then(() => {
             resolve(images);
         }).catch((err) => {
@@ -337,24 +349,22 @@ const getImagesByColor = async (colors, range) => {
     });
 }
 
-const refineByColor = (imageSet, colors, range) => {
+const refineByColor = (imageSet, colors) => {
     let images = imageSet.slice();
-    // filters images to images containing all given colors
-    for (let i=0; i<colors.length; i++) {
-        let currColor = colors[i];
-        // filters image set for current color
-        images = images.filter((image) => {
-            let match = false;
-            // checks each color of image for similarity to current color
-            for (let j=0; j<image.colors.length; j++) {
-                match = isSimilarColor(currColor, image.colors[j], range);
-                if (match) {
-                    break;
-                } 
-            }
-            return match;
-        });
-    }
+
+    if (colors.red) {images = images.filter((image) => {return image.red;})}
+    if (colors.redOrange) {images = images.filter((image) => {return image.redOrange;})}
+    if (colors.orange) {images = images.filter((image) => {return image.orange;})}
+    if (colors.orangeYellow) {images = images.filter((image) => {return image.orangeYellow;})}
+    if (colors.yellow) {images = images.filter((image) => {return image.yellow;})}
+    if (colors.yellowGreen) {images = images.filter((image) => {return image.yellowGreen;})}
+    if (colors.green) {images = images.filter((image) => {return image.green;})}
+    if (colors.greenBlue) {images = images.filter((image) => {return image.greenBlue;})}
+    if (colors.blue) {images = images.filter((image) => {return image.blue;})}
+    if (colors.blueViolet) {images = images.filter((image) => {return image.blueViolet;})}
+    if (colors.violet) {images = images.filter((image) => {return image.violet;})}
+    if (colors.violetRed) {images = images.filter((image) => {return image.violetRed;})}
+    
     return images;
 }
 
@@ -432,7 +442,7 @@ exports.getImages = functions.https.onRequest((req, res) => {
         let priority = null;
         let bothFulfilled = false;
 
-        if (req.body.filterByOwner) {
+        if (req.body.owner) {
             owner = req.body.owner;
         }
         if (req.body.colors) {
