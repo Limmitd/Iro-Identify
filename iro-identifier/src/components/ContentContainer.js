@@ -18,8 +18,7 @@ const ContentContainer = () => {
 
     const refineSearch = () => {
         axios.post("https://us-central1-iro-identifier.cloudfunctions.net/getImages", {
-            colors: [290],
-            labels: ["sky"]
+            colors: [230],
         }).then((res) => {
             console.log(res.data);
             setImages(res.data.images);

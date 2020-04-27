@@ -12,9 +12,6 @@ const vision = require('@google-cloud/vision');
 const { Storage } = require("@google-cloud/storage");
 const { Datastore } = require('@google-cloud/datastore');
 
-// using HSL values, similarity range is the +- value for the L value to find similar colors
-const SimilarityRange = 15;
-
 const pathToGcKey = "iro-identifier-firebase-adminsdk-i96zj-6e4002e6a4.json";
 const visionClient = new vision.ImageAnnotatorClient({
     keyFilename: pathToGcKey
@@ -281,7 +278,7 @@ const isSimilarColor = (match, check, range) => {
     }
 }
 
-const getImagesByColor = async (colors) => {
+const getImagesByColor = async (colors, range) => {
     let queries = [];
     let promises = [];
 
@@ -289,16 +286,16 @@ const getImagesByColor = async (colors) => {
     let idSet = new Set();
     let currColor = colors[0];
 
-    if ((currColor - SimilarityRange) < 0) {
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", (SimilarityRange + currColor)));
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", (360 - (SimilarityRange - currColor))).filter("colors", "<=", 360));
+    if ((currColor - range) < 0) {
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", (range + currColor)));
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", (360 - (range - currColor))).filter("colors", "<=", 360));
 
-    } else if ((currColor + SimilarityRange) > 360) {
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", ((currColor + SimilarityRange) - 360)));
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - SimilarityRange)).filter("colors", "<=", 360));
+    } else if ((currColor + range) > 360) {
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", 0).filter("colors", "<=", ((currColor + range) - 360)));
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - range)).filter("colors", "<=", 360));
 
     } else {
-        queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - SimilarityRange)).filter("colors", "<=", (currColor + SimilarityRange)));
+        queries.push(datastore.createQuery("Image").filter("colors", ">=", (currColor - range)).filter("colors", "<=", (currColor + range)));
     }
 
     // forms collection matching first color and avoiding duplicate entries
@@ -324,7 +321,7 @@ const getImagesByColor = async (colors) => {
                     let match = false;
                     // checks each color of image for similarity to current color
                     for (let j=0; j<image.colors.length; j++) {
-                        match = isSimilarColor(currColor, image.colors[j], SimilarityRange);
+                        match = isSimilarColor(currColor, image.colors[j], range);
                         if (match) {
                             break;
                         } 
@@ -340,7 +337,7 @@ const getImagesByColor = async (colors) => {
     });
 }
 
-const refineByColor = (imageSet, colors) => {
+const refineByColor = (imageSet, colors, range) => {
     let images = imageSet.slice();
     // filters images to images containing all given colors
     for (let i=0; i<colors.length; i++) {
@@ -350,7 +347,7 @@ const refineByColor = (imageSet, colors) => {
             let match = false;
             // checks each color of image for similarity to current color
             for (let j=0; j<image.colors.length; j++) {
-                match = isSimilarColor(currColor, image.colors[j], SimilarityRange);
+                match = isSimilarColor(currColor, image.colors[j], range);
                 if (match) {
                     break;
                 } 
@@ -426,7 +423,11 @@ exports.getImages = functions.https.onRequest((req, res) => {
 
         let owner = null;
         let colors = null;
+        // using HSL values, similarity range is the +- value for the H value to find similar colors
+        let similarityRange = 10
+
         let labels = null;
+
         // priority is used in case both conditions of images with colors and labels cannot be matched, it will return results from at least the priority
         let priority = null;
         let bothFulfilled = false;
@@ -436,6 +437,9 @@ exports.getImages = functions.https.onRequest((req, res) => {
         }
         if (req.body.colors) {
             colors = req.body.colors;
+        }
+        if (req.body.similarityRange) {
+            similarityRange = req.body.similarityRange;
         }
         if (req.body.labels) {
             labels = req.body.labels;
@@ -463,7 +467,7 @@ exports.getImages = functions.https.onRequest((req, res) => {
                 }));
             }
         } else if (colors) {
-            promises.push(getImagesByColor(colors).then((results) => {
+            promises.push(getImagesByColor(colors, similarityRange).then((results) => {
                 images = results;
             }));
         } else if (labels) {
@@ -486,7 +490,7 @@ exports.getImages = functions.https.onRequest((req, res) => {
                     if (priority === "labels") {
                         images = refineByLabel(images, labels);
                         if (colors) {
-                            const results = refineByColor(images, colors);
+                            const results = refineByColor(images, colors, similarityRange);
                             if (results.length > 0) {
                                 images = results;
                                 bothFulfilled = true;
@@ -494,7 +498,7 @@ exports.getImages = functions.https.onRequest((req, res) => {
                         }
                     // refines by colors then labels
                     } else {
-                        images = refineByColor(images, colors);
+                        images = refineByColor(images, colors, similarityRange);
                         if (labels) {
                             const results = refineByLabel(images, labels);
                             if (results.length > 0) {
@@ -505,7 +509,7 @@ exports.getImages = functions.https.onRequest((req, res) => {
                     }
                 // owner and colors are passed
                 } else if (colors) {
-                    images = refineByColor(images, colors);
+                    images = refineByColor(images, colors, similarityRange);
                     // labels are also passed
                     if (labels) {
                         const results = refineByLabel(images, labels);
@@ -524,7 +528,7 @@ exports.getImages = functions.https.onRequest((req, res) => {
                     // refines by labels then colors
                     if (priority === "labels") {
                         if (colors) {
-                            const results = refineByColor(images, colors);
+                            const results = refineByColor(images, colors, similarityRange);
                             if (results.length > 0) {
                                 images = results;
                                 bothFulfilled = true;
